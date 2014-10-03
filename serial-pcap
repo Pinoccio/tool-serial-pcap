@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+
+# AVR / Arduino dynamic memory log analyis script.
+#
+# Copyright 2014 Matthijs Kooijman <matthijs@stdin.nl>
+#
+# Permission is hereby granted, free of charge, to any person obtaining
+# a copy of this software and associated documentation files (the
+# "Software"), to deal in the Software without restriction, including
+# without limitation the rights to use, copy, modify, merge, publish,
+# distribute, sublicense, and/or sell copies of the Software, and to
+# permit persons to whom the Software is furnished to do so, subject to
+# the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+# IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+# CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+# TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#
+# This script is intended to read raw packets (currently only 802.15.4
+# packets prefixed by a length byte) from a serial port and output them
+# in pcap format.
+
+import os
+import sys
+import time
+import serial
+import struct
+import binascii
+import datetime
+import argparse
+
+class PcapFormatter:
+    def __init__(self, out):
+        self.out = out
+
+    def write_header(self):
+        self.out.write(struct.pack("=IHHiIII",
+            0xa1b2c3d4,   # magic number
+            2,            # major version number
+            4,            # minor version number
+            0,            # GMT to local correction
+            0,            # accuracy of timestamps
+            65535,        # max length of captured packets, in octets
+            195,          # data link type (DLT) - IEEE 802.15.4
+        ))
+        self.out.flush()
+
+    def write_packet(self, data):
+        now = datetime.datetime.now()
+        timestamp = int(time.mktime(now.timetuple()))
+        self.out.write(struct.pack("=IIII",
+            timestamp,        # timestamp seconds
+            now.microsecond,  # timestamp microseconds
+            len(data),        # number of octets of packet saved in file
+            len(data),        # actual length of packet
+        ))
+        self.out.write(data)
+        self.out.flush()
+
+class HumanFormatter:
+    def __init__(self, out):
+        self.out = out
+
+    def write_header(self):
+        pass
+
+    def write_packet(self, data):
+        self.out.write(binascii.hexlify(data).decode())
+        self.out.write("\n")
+        self.out.flush()
+
+def open_fifo(options, name):
+    try:
+        os.mkfifo(name);
+    except FileExistsError:
+        pass
+    except:
+        raise
+
+    if not options.quiet:
+        print("Waiting for fifo to be openend...")
+    # This blocks until the other side of the fifo is opened
+    return open(name, 'wb')
+
+def setup_output(options):
+    if options.fifo:
+        return PcapFormatter(open_fifo(options, options.fifo))
+    elif options.write_file:
+        return PcapFormatter(open(options.write_file, 'wb'))
+    else:
+        return HumanFormatter(sys.stdout)
+
+def main():
+    parser = argparse.ArgumentParser(description='Convert 802.15.4 packets read from a serial port into pcap format')
+    parser.add_argument('port',
+                        help='The serial port to read from')
+    parser.add_argument('-b', '--baudrate', default=115200, type=int,
+                        help='The baudrate to use for the serial port (defaults to %(default)s)')
+    parser.add_argument('-q', '--quiet', action='store_true',
+                        help='Do not output any informational messages')
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument('-F', '--fifo',
+                        help='Write output to a fifo instead of stdout. The fifo is created if needed and capturing does not start until the other side of the fifo is opened.')
+    output.add_argument('-w', '--write-file',
+                        help='Write output to a file instead of stdout')
+    output.add_argument('-d', '--send-init-delay', type=int, default=1,
+                        help='Wait for this many seconds between opening the serial port and sending the init string (defaults to %(default)s)')
+    output.add_argument('-s', '--send-init', type=bytes, default=b'module.enable("sniffer"); sniffer.start(1);\r\n',
+                        help='Send the given string over serial to enable capture mode (defaults to %(default)s)')
+    output.add_argument('-r', '--read-init', type=bytes, default=b'SNIF',
+                        help='Wait until the given string is read from serial before starting capture (defaults to %(default)s)')
+
+    options = parser.parse_args();
+
+    # This might blocks until the other side of the fifo is opened
+    out = setup_output(options)
+    out.write_header()
+
+    ser = serial.Serial(options.port, options.baudrate)
+    print("Opened {} at {}".format(options.port, options.baudrate))
+
+    if options.send_init_delay:
+        if not options.quiet:
+            print("Waiting for {} second{}".format(options.send_init_delay, 's' if options.send_init_delay != 1 else ''))
+        time.sleep(options.send_init_delay)
+
+    if (options.send_init):
+        if not options.quiet:
+            print("Sending: {}".format(options.send_init))
+        ser.write(options.send_init)
+
+    if (options.read_init):
+        if not options.quiet:
+            print("Waiting to read: {}".format(options.read_init))
+        read = ser.read(len(options.read_init))
+        while True:
+            read = read[1:] + ser.read()
+            if read == options.read_init:
+                break
+
+    if not options.quiet:
+        print("Waiting for packets...")
+
+    count = 0
+
+    try:
+        while True:
+            length = ser.read()[0]
+            data = ser.read(length)
+            out.write_packet(data)
+            count += 1
+    except KeyboardInterrupt:
+        pass
+
+    if not options.quiet:
+        print("Captured {} packet{}".format(count, 's' if count != 1 else ''))
+
+if __name__ == '__main__':
+    main()
