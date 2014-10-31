@@ -110,7 +110,7 @@ def main():
                         help='Write output to a fifo instead of stdout. The fifo is created if needed and capturing does not start until the other side of the fifo is opened.')
     output.add_argument('-w', '--write-file',
                         help='Write output to a file instead of stdout')
-    output.add_argument('-d', '--send-init-delay', type=int, default=1,
+    output.add_argument('-d', '--send-init-delay', type=int, default=2,
                         help='Wait for this many seconds between opening the serial port and sending the init string (defaults to %(default)s)')
     output.add_argument('-s', '--send-init', type=bytes, default=b'module.enable("sniffer"); sniffer.start(1);\r\n',
                         help='Send the given string over serial to enable capture mode (defaults to %(default)s)')
