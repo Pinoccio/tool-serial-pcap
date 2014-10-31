@@ -141,9 +141,9 @@ def main():
             print("Waiting to read: {}".format(options.read_init))
         read = ser.read(len(options.read_init))
         while True:
-            read = read[1:] + ser.read()
             if read == options.read_init:
                 break
+            read = read[1:] + ser.read()
 
     if not options.quiet:
         print("Waiting for packets...")
