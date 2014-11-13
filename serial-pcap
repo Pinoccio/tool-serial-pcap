@@ -30,8 +30,10 @@
 import os
 import sys
 import time
+import errno
 import serial
 import struct
+import select
 import binascii
 import datetime
 import argparse
@@ -123,7 +125,15 @@ def main():
 
     options = parser.parse_args();
 
-    # This might blocks until the other side of the fifo is opened
+    try:
+        # If the fifo got closed, just start over again
+        while True:
+            do_sniff_once(options)
+    except KeyboardInterrupt:
+        pass
+
+def do_sniff_once(options):
+    # This might block until the other side of the fifo is opened
     out = setup_output(options)
     out.write_header()
 
@@ -153,15 +163,33 @@ def main():
         print("Waiting for packets...")
 
     count = 0
+    poll = select.poll()
+    # Wait to read data from serial, or until the fifo is closed
+    poll.register(ser, select.POLLIN)
+    poll.register(out, select.POLLERR)
 
-    try:
-        while True:
+    while True:
+        # Wait for something to do
+        events = poll.poll()
+
+        fds = [fd for (fd, evt) in events]
+        if out.fileno() in fds:
+            # Error on output, e.g. fifo closed on the other end
+            break
+        elif ser.fileno() in fds:
+            # First byte is length of packet, followed by raw data bytes
             length = ser.read()[0]
             data = ser.read(length)
-            out.write_packet(data)
             count += 1
-    except KeyboardInterrupt:
-        pass
+            try:
+                out.write_packet(data)
+            except OSError as e:
+                # SIGPIPE indicates the fifo was closed
+                if e.errno == errno.SIGPIPE:
+                    break
+
+    ser.close()
+    out.close()
 
     if not options.quiet:
         print("Captured {} packet{}".format(count, 's' if count != 1 else ''))
