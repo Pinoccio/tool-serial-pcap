@@ -36,10 +36,17 @@ import binascii
 import datetime
 import argparse
 
-class PcapFormatter:
+class Formatter:
     def __init__(self, out):
         self.out = out
 
+    def fileno(self):
+        return self.out.fileno()
+
+    def close(self):
+        self.out.close()
+
+class PcapFormatter(Formatter):
     def write_header(self):
         self.out.write(struct.pack("=IHHiIII",
             0xa1b2c3d4,   # magic number
@@ -64,10 +71,7 @@ class PcapFormatter:
         self.out.write(data)
         self.out.flush()
 
-class HumanFormatter:
-    def __init__(self, out):
-        self.out = out
-
+class HumanFormatter(Formatter):
     def write_header(self):
         pass
 
