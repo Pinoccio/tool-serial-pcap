@@ -4,6 +4,9 @@ This script is intended to read raw packets (currently only 802.15.4
 packets prefixed by a length byte) from a serial port and output them
 in pcap format.
 
+You'll need the `serial` package.
+You can install it through pip using `pip install serial`.
+
 Default arguments are currently aimed at capturing packets using a
 Pinoccio Scout board, so when using a Pinoccio Scout you can just run:
 
