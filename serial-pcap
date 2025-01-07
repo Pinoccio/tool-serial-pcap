@@ -38,9 +38,125 @@ import binascii
 import datetime
 import argparse
 
+ ############################
+ # START WINDOWS FIFO PATCH #
+ ############################
+
+if os.name == 'nt':
+    import win32file
+    import win32pipe
+
+    ######
+    # Windows Patch Class Definitions
+    ######
+
+    class Poller:
+        """Basic select.poll() implementation for Windows.
+        
+        Credit: https://gist.github.com/gustaebel/b58e887ba93a4d0eba102dae871e11af
+        """
+
+        def __init__(self):
+            self.r = []
+            self.w = []
+            self.e = []
+
+        def register(self, sock, eventmask=None):
+            if eventmask is None:
+                eventmask = select.POLLIN | select.POLLOUT | select.POLLPRI
+
+            if eventmask & select.POLLIN or eventmask & select.POLLERR:
+                self.r.append(sock)
+            if eventmask & select.POLLOUT:
+                self.w.append(sock)
+            if eventmask & select.POLLPRI:
+                self.e.append(sock)
+
+        def unregister(self, sock):
+            for l in (self.r, self.w, self.e):
+                try:
+                    l.remove(sock)
+                except IndexError:
+                    pass
+
+        def _poll(self, timeout):
+            if timeout is None:
+                r, w, e = select.select(self.r, self.w, self.e)
+            else:
+                r, w, e = select.select(self.r, self.w, self.e, int(timeout / 1000))
+
+            sockets = set(r) | set(w) | set(e)
+            for sock in sockets:
+                event = 0
+                if sock in r:
+                    event |= select.POLLIN
+                if sock in w:
+                    event |= select.POLLOUT
+                if sock in e:
+                    event |= select.POLLPRI
+                yield sock, event
+
+        def poll(self, timeout=None):
+            return list(self._poll(timeout))
+
+    class WindowsPipe:
+        def __init__(self, pipe):
+            self.pipe = pipe
+        
+        def fileno(self):
+            return self.pipe.__int__()
+
+        def write(self, data):
+            win32file.WriteFile(self.pipe, data)
+        
+        def flush(self):
+            win32file.FlushFileBuffers(self.pipe)
+
+        def close(self):
+            win32file.CloseHandle(self.pipe)
+
+    class WindowsSerial(serial.Serial):
+        def fileno(self):
+            return self.in_waiting
+
+    ######
+    # Windows Patch Function Definitions
+    ######
+
+    def win32_poll_install():
+        """Credit: https://gist.github.com/gustaebel/b58e887ba93a4d0eba102dae871e11af
+        """
+        select.poll = Poller
+        select.POLLIN = 1
+        select.POLLOUT = 2
+        select.POLLPRI = 4
+        select.POLLERR = 8
+
+    def open_fifo_windows(options, name):
+        pipe = win32pipe.CreateNamedPipe(
+            fr'\\.\pipe\{name}',
+            win32pipe.PIPE_ACCESS_OUTBOUND,
+            win32pipe.PIPE_TYPE_BYTE | win32pipe.PIPE_WAIT,
+            1, 65536, 65536, 0, None
+        )
+
+        if not options.quiet:
+            print("Waiting for fifo to be openend...")
+        # This blocks until the other side of the fifo is opened
+        win32pipe.ConnectNamedPipe(pipe, None)
+
+        return pipe
+
+##########################
+# END WINDOWS FIFO PATCH #
+##########################
+
 class Formatter:
     def __init__(self, out):
-        self.out = out
+        if os.name == 'nt':
+            self.out = WindowsPipe(out)
+        else:
+            self.out = out
 
     def fileno(self):
         return self.out.fileno()
@@ -82,7 +198,7 @@ class HumanFormatter(Formatter):
         self.out.write("\n")
         self.out.flush()
 
-def open_fifo(options, name):
+def open_fifo_linux(options, name):
     try:
         os.mkfifo(name);
     except FileExistsError:
@@ -97,7 +213,14 @@ def open_fifo(options, name):
 
 def setup_output(options):
     if options.fifo:
+        if os.name == "nt":
+            open_fifo = open_fifo_windows
+            win32_poll_install()
+        else:
+            open_fifo = open_fifo_linux
+        
         return PcapFormatter(open_fifo(options, options.fifo))
+    
     elif options.write_file:
         return PcapFormatter(open(options.write_file, 'wb'))
     else:
@@ -136,8 +259,11 @@ def do_sniff_once(options):
     # This might block until the other side of the fifo is opened
     out = setup_output(options)
     out.write_header()
-
-    ser = serial.Serial(options.port, options.baudrate)
+    
+    if os.name == 'nt':
+        ser = WindowsSerial(options.port, options.baudrate)
+    else:
+        ser = serial.Serial(options.port, options.baudrate)
     print("Opened {} at {}".format(options.port, options.baudrate))
 
     if options.send_init_delay:
