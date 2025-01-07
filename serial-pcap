@@ -33,7 +33,7 @@ import time
 import errno
 import serial
 import struct
-import select
+import selectors
 import binascii
 import datetime
 import argparse
@@ -43,68 +43,22 @@ import argparse
  ############################
 
 if os.name == 'nt':
+    from pywintypes import HANDLEType
     import win32file
     import win32pipe
+    import win32security
+    import ntsecuritycon
 
     ######
     # Windows Patch Class Definitions
     ######
 
-    class Poller:
-        """Basic select.poll() implementation for Windows.
-        
-        Credit: https://gist.github.com/gustaebel/b58e887ba93a4d0eba102dae871e11af
-        """
-
-        def __init__(self):
-            self.r = []
-            self.w = []
-            self.e = []
-
-        def register(self, sock, eventmask=None):
-            if eventmask is None:
-                eventmask = select.POLLIN | select.POLLOUT | select.POLLPRI
-
-            if eventmask & select.POLLIN or eventmask & select.POLLERR:
-                self.r.append(sock)
-            if eventmask & select.POLLOUT:
-                self.w.append(sock)
-            if eventmask & select.POLLPRI:
-                self.e.append(sock)
-
-        def unregister(self, sock):
-            for l in (self.r, self.w, self.e):
-                try:
-                    l.remove(sock)
-                except IndexError:
-                    pass
-
-        def _poll(self, timeout):
-            if timeout is None:
-                r, w, e = select.select(self.r, self.w, self.e)
-            else:
-                r, w, e = select.select(self.r, self.w, self.e, int(timeout / 1000))
-
-            sockets = set(r) | set(w) | set(e)
-            for sock in sockets:
-                event = 0
-                if sock in r:
-                    event |= select.POLLIN
-                if sock in w:
-                    event |= select.POLLOUT
-                if sock in e:
-                    event |= select.POLLPRI
-                yield sock, event
-
-        def poll(self, timeout=None):
-            return list(self._poll(timeout))
-
     class WindowsPipe:
         def __init__(self, pipe):
-            self.pipe = pipe
+            self.pipe:HANDLEType = pipe
         
         def fileno(self):
-            return self.pipe.__int__()
+            return self.pipe
 
         def write(self, data):
             win32file.WriteFile(self.pipe, data)
@@ -114,30 +68,46 @@ if os.name == 'nt':
 
         def close(self):
             win32file.CloseHandle(self.pipe)
-
+    
     class WindowsSerial(serial.Serial):
         def fileno(self):
-            return self.in_waiting
+            return int(self.name[3:])
+    
+    class WindowsSelector(selectors.SelectSelector):
+        def _select(self, r, w, _, timeout = None):
+            retr = []
+            retw = []
+            
+            for rfd in r:
+                rfo:WindowsSerial = self.get_key(rfd).fileobj
+                if rfo.in_waiting == 0:
+                    retr.append(rfd)
+            
+            for wfd in w:
+                wfo:PcapFormatter = self.get_key(wfd).fileobj
+                pipe = wfo.out.pipe
+                _, available_bytes, _ = win32pipe.PeekNamedPipe(pipe, 0)
+                
+                if available_bytes != 0:
+                    retw.append(wfd)
+            
+            return retr, retw, []
+                
 
     ######
     # Windows Patch Function Definitions
     ######
 
-    def win32_poll_install():
-        """Credit: https://gist.github.com/gustaebel/b58e887ba93a4d0eba102dae871e11af
-        """
-        select.poll = Poller
-        select.POLLIN = 1
-        select.POLLOUT = 2
-        select.POLLPRI = 4
-        select.POLLERR = 8
-
     def open_fifo_windows(options, name):
         pipe = win32pipe.CreateNamedPipe(
             fr'\\.\pipe\{name}',
-            win32pipe.PIPE_ACCESS_OUTBOUND,
+            win32pipe.PIPE_ACCESS_DUPLEX,
             win32pipe.PIPE_TYPE_BYTE | win32pipe.PIPE_WAIT,
-            1, 65536, 65536, 0, None
+            1, 
+            65536, 
+            65536, 
+            0,
+            None
         )
 
         if not options.quiet:
@@ -215,7 +185,6 @@ def setup_output(options):
     if options.fifo:
         if os.name == "nt":
             open_fifo = open_fifo_windows
-            win32_poll_install()
         else:
             open_fifo = open_fifo_linux
         
@@ -264,6 +233,7 @@ def do_sniff_once(options):
         ser = WindowsSerial(options.port, options.baudrate)
     else:
         ser = serial.Serial(options.port, options.baudrate)
+        
     print("Opened {} at {}".format(options.port, options.baudrate))
 
     if options.send_init_delay:
@@ -289,16 +259,20 @@ def do_sniff_once(options):
         print("Waiting for packets...")
 
     count = 0
-    poll = select.poll()
+    if os.name == 'nt':
+        poll = WindowsSelector()
+    else:
+        poll = selectors.DefaultSelector()
+        
     # Wait to read data from serial, or until the fifo is closed
-    poll.register(ser, select.POLLIN)
-    poll.register(out, select.POLLERR)
+    poll.register(ser, selectors.EVENT_READ)
+    poll.register(out, selectors.EVENT_WRITE)
 
     while True:
         # Wait for something to do
-        events = poll.poll()
+        events = poll.select()
 
-        fds = [fd for (fd, evt) in events]
+        fds = [fd.fileobj.fileno() for (fd,evt) in events]
         if out.fileno() in fds:
             # Error on output, e.g. fifo closed on the other end
             break
