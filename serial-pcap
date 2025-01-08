@@ -54,6 +54,7 @@ if os.name == 'nt':
     ######
 
     class WindowsPipe:
+        # Wrapper for the windows pipe using the pywin32 calls
         def __init__(self, pipe):
             self.pipe:HANDLEType = pipe
         
@@ -70,11 +71,16 @@ if os.name == 'nt':
             win32file.CloseHandle(self.pipe)
     
     class WindowsSerial(serial.Serial):
+        # Give our serial a "fd" of it's "COM" port number
         def fileno(self):
             return int(self.name[3:])
     
     class WindowsSelector(selectors.SelectSelector):
         def _select(self, r, w, _, timeout = None):
+            # Since we are only reading from serial writing to a pipe (for fifos) we
+            # can harcode in what types are going to be in the read and write arrays
+            #
+            # Implementation logic taken from the select(2) manpage 
             retr = []
             retw = []
             
@@ -88,8 +94,11 @@ if os.name == 'nt':
                 pipe = wfo.out.pipe
                 try:
                     _, available_bytes, _ = win32pipe.PeekNamedPipe(pipe, 0)
+                    
+                    if available_bytes == 0:
+                        retw.append(wfd)
                 except:
-                    retw.append(wfd)
+                    continue
             
             return retr, retw, []
                 
@@ -99,6 +108,7 @@ if os.name == 'nt':
     ######
 
     def open_fifo_windows(options, name):
+        # Create named Pipe
         pipe = win32pipe.CreateNamedPipe(
             fr'\\.\pipe\{name}',
             win32pipe.PIPE_ACCESS_DUPLEX,
@@ -258,7 +268,6 @@ def do_sniff_once(options):
     if not options.quiet:
         print("Waiting for packets...")
 
-    count = 0
     if os.name == 'nt':
         sel = WindowsSelector()
     else:
@@ -268,12 +277,14 @@ def do_sniff_once(options):
     sel.register(ser, selectors.EVENT_READ)
     sel.register(out, selectors.EVENT_WRITE)
 
+    count = 0
+
     while True:
         # Wait for something to do
         events = sel.select()
 
         fds = [fd.fileobj.fileno() for (fd,evt) in events]
-        if out.fileno() in fds:
+        if out.fileno() not in fds:
             # Error on output, e.g. fifo closed on the other end
             break
         elif ser.fileno() in fds:
