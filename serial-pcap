@@ -86,9 +86,9 @@ if os.name == 'nt':
             for wfd in w:
                 wfo:PcapFormatter = self.get_key(wfd).fileobj
                 pipe = wfo.out.pipe
-                _, available_bytes, _ = win32pipe.PeekNamedPipe(pipe, 0)
-                
-                if available_bytes != 0:
+                try:
+                    _, available_bytes, _ = win32pipe.PeekNamedPipe(pipe, 0)
+                except:
                     retw.append(wfd)
             
             return retr, retw, []
@@ -260,17 +260,17 @@ def do_sniff_once(options):
 
     count = 0
     if os.name == 'nt':
-        poll = WindowsSelector()
+        sel = WindowsSelector()
     else:
-        poll = selectors.DefaultSelector()
+        sel = selectors.DefaultSelector()
         
     # Wait to read data from serial, or until the fifo is closed
-    poll.register(ser, selectors.EVENT_READ)
-    poll.register(out, selectors.EVENT_WRITE)
+    sel.register(ser, selectors.EVENT_READ)
+    sel.register(out, selectors.EVENT_WRITE)
 
     while True:
         # Wait for something to do
-        events = poll.select()
+        events = sel.select()
 
         fds = [fd.fileobj.fileno() for (fd,evt) in events]
         if out.fileno() in fds:
