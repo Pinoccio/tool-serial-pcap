@@ -283,7 +283,7 @@ def do_sniff_once(options):
         # Wait for something to do
         events = sel.select()
 
-        fds = [fd.fileobj.fileno() for (fd,evt) in events]
+        fds = [fd.fileobj.fileno() for (fd, evt) in events]
         if out.fileno() not in fds:
             # Error on output, e.g. fifo closed on the other end
             break
