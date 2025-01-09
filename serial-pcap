@@ -125,7 +125,7 @@ if os.name == 'nt':
         # This blocks until the other side of the fifo is opened
         win32pipe.ConnectNamedPipe(pipe, None)
 
-        return pipe
+        return WindowsPipe(pipe)
 
 ##########################
 # END WINDOWS FIFO PATCH #
@@ -133,10 +133,7 @@ if os.name == 'nt':
 
 class Formatter:
     def __init__(self, out):
-        if os.name == 'nt':
-            self.out = WindowsPipe(out)
-        else:
-            self.out = out
+         self.out = out
 
     def fileno(self):
         return self.out.fileno()
