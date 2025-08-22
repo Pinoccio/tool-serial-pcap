@@ -1,5 +1,9 @@
 serial-pcap
 ===========
+
+> [!IMPORTANT]  
+> This tool is no longer developed here, but a followup can be found at https://github.com/matthijskooijman/serial-pcap
+
 This script is intended to read raw packets (currently only 802.15.4
 packets prefixed by a length byte) from a serial port and output them
 in pcap format.
